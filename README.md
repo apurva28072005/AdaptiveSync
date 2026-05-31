@@ -240,6 +240,6 @@ bash benchmarks/benchmark_concurrency.sh
 
 ## Author
 
-**Prasad Hiwarkhede** — May 2026
+**Apurva Gaikwad** — May 2026
 
 Built as a systems engineering showcase for the Zoho engineering assessment.
