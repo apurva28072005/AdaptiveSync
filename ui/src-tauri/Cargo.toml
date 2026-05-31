@@ -1,0 +1,25 @@
+[package]
+name = "adaptivesync-ui"
+version = "1.0.0"
+description = "AdaptiveSync Desktop Client — Tauri wrapper"
+authors = ["Prasad Hiwarkhede"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+adaptivesync-client = { path = "../../client" }
+log = "0.4"
+env_logger = "0.10"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

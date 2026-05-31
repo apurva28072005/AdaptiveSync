@@ -1,0 +1,234 @@
+syntax = "proto3";
+
+package adaptivesync;
+
+// ============================================================
+// AdaptiveSync Wire Protocol
+// Cross-language Protobuf definitions for C++ server <-> Rust client
+// ============================================================
+
+// ─── Enumerations ───────────────────────────────────────────
+
+enum TransferMode {
+  TRANSFER_MODE_UNSPECIFIED = 0;
+  ZERO_COPY = 1;    // Full file transfer via sendfile/TransmitFile
+  DELTA_SYNC = 2;   // Block-level delta synchronization
+}
+
+enum FileMode {
+  FILE_MODE_UNSPECIFIED = 0;
+  FRESH = 1;        // File does not exist on destination
+  MODIFIED = 2;     // File exists but has changes
+  UNCHANGED = 3;    // File is identical (no transfer needed)
+}
+
+enum StatusCode {
+  STATUS_UNSPECIFIED = 0;
+  OK = 1;
+  ERROR = 2;
+  FILE_NOT_FOUND = 3;
+  PERMISSION_DENIED = 4;
+  CHECKSUM_MISMATCH = 5;
+  PROTOCOL_ERROR = 6;
+  BUSY = 7;         // File is locked by another operation
+}
+
+// ─── Handshake & Negotiation ────────────────────────────────
+
+// Client initiates connection with capabilities
+message ClientHello {
+  uint32 protocol_version = 1;
+  string client_id = 2;
+  repeated TransferMode supported_modes = 3;
+  uint32 block_size = 4;          // Preferred block size for delta-sync (bytes)
+}
+
+// Server responds with its capabilities
+message ServerHello {
+  uint32 protocol_version = 1;
+  string server_id = 2;
+  repeated TransferMode supported_modes = 3;
+  uint32 max_concurrent_transfers = 4;
+  uint64 max_file_size = 5;       // Maximum single file size (bytes)
+  uint32 block_size = 6;          // Negotiated block size for delta-sync
+}
+
+// ─── File Metadata ──────────────────────────────────────────
+
+message FileMetadata {
+  string relative_path = 1;       // Path relative to sync root
+  uint64 file_size = 2;           // Total size in bytes
+  uint64 last_modified_ns = 3;    // Last modified timestamp (nanoseconds since epoch)
+  string sha256_hash = 4;         // Full-file SHA-256 hex digest
+  FileMode file_mode = 5;         // Determined by the Negotiator
+}
+
+// ─── Negotiator Protocol ────────────────────────────────────
+
+// Client asks server to check a file's state
+message NegotiationRequest {
+  string relative_path = 1;
+  uint64 client_file_size = 2;
+  uint64 client_last_modified_ns = 3;
+  string client_sha256_hash = 4;
+}
+
+// Server responds with the determined mode
+message NegotiationResponse {
+  FileMode file_mode = 1;
+  TransferMode transfer_mode = 2;
+  uint64 server_file_size = 3;    // 0 if file doesn't exist on server
+  string server_sha256_hash = 4;  // Empty if file doesn't exist on server
+  uint32 block_size = 5;          // Agreed block size for delta-sync
+}
+
+// ─── Zero-Copy Transfer ─────────────────────────────────────
+
+// Client requests a full file download via zero-copy
+message ZeroCopyDownloadRequest {
+  string relative_path = 1;
+  uint64 offset = 2;              // Resume support: start byte offset
+}
+
+// Server streams the file metadata first, then raw bytes follow
+// outside of Protobuf framing (kernel-space sendfile path)
+message ZeroCopyDownloadHeader {
+  string relative_path = 1;
+  uint64 total_size = 2;
+  string sha256_hash = 3;
+  uint64 offset = 4;
+}
+
+// Client requests a full file upload
+message ZeroCopyUploadRequest {
+  FileMetadata metadata = 1;
+}
+
+// Server acknowledges upload readiness
+message ZeroCopyUploadAck {
+  StatusCode status = 1;
+  string error_message = 2;
+  uint64 offset = 3;              // Resume: server already has bytes up to this offset
+}
+
+// ─── Delta-Sync Protocol ────────────────────────────────────
+
+// A single block signature from the client
+message BlockSignature {
+  uint32 block_index = 1;
+  uint32 rolling_hash = 2;        // Adler-32 rolling checksum
+  string strong_hash = 3;         // SHA-256 of the block
+  uint64 block_offset = 4;        // Byte offset in the file
+  uint32 block_size = 5;          // Actual size (may be < block_size for last block)
+}
+
+// Client sends all block signatures for a file
+message DeltaSyncSignatureRequest {
+  string relative_path = 1;
+  uint64 file_size = 2;
+  uint32 block_size = 3;
+  repeated BlockSignature signatures = 4;
+}
+
+// Server tells client which blocks it needs
+message DeltaSyncBlockRequest {
+  string relative_path = 1;
+  repeated uint32 requested_block_indices = 2;
+}
+
+// Client sends a single block of data
+message DeltaSyncBlockData {
+  string relative_path = 1;
+  uint32 block_index = 2;
+  uint64 block_offset = 3;
+  bytes data = 4;
+  string strong_hash = 5;         // SHA-256 verification hash
+}
+
+// Server confirms delta-sync completion
+message DeltaSyncComplete {
+  string relative_path = 1;
+  StatusCode status = 2;
+  string error_message = 3;
+  string final_sha256_hash = 4;   // Hash of reconstructed file
+}
+
+// ─── File Listing ───────────────────────────────────────────
+
+message ListFilesRequest {
+  string directory_prefix = 1;    // Filter by directory prefix
+  bool recursive = 2;
+}
+
+message ListFilesResponse {
+  repeated FileMetadata files = 1;
+}
+
+// ─── General Purpose ────────────────────────────────────────
+
+message ErrorPayload {
+  StatusCode code = 1;
+  string message = 2;
+  string detail = 3;
+}
+
+// ─── Top-Level Wire Envelope ────────────────────────────────
+
+// Every message on the wire is prefixed with:
+//   [4 bytes: big-endian payload length] [1 byte: message type] [payload bytes]
+// This allows efficient framing without full Protobuf parsing.
+
+enum MessageType {
+  MSG_UNSPECIFIED = 0;
+
+  // Handshake
+  MSG_CLIENT_HELLO = 1;
+  MSG_SERVER_HELLO = 2;
+
+  // Negotiation
+  MSG_NEGOTIATION_REQUEST = 10;
+  MSG_NEGOTIATION_RESPONSE = 11;
+
+  // Zero-Copy Transfer
+  MSG_ZERO_COPY_DOWNLOAD_REQUEST = 20;
+  MSG_ZERO_COPY_DOWNLOAD_HEADER = 21;
+  MSG_ZERO_COPY_UPLOAD_REQUEST = 22;
+  MSG_ZERO_COPY_UPLOAD_ACK = 23;
+
+  // Delta-Sync
+  MSG_DELTA_SYNC_SIGNATURE_REQUEST = 30;
+  MSG_DELTA_SYNC_BLOCK_REQUEST = 31;
+  MSG_DELTA_SYNC_BLOCK_DATA = 32;
+  MSG_DELTA_SYNC_COMPLETE = 33;
+
+  // File Listing
+  MSG_LIST_FILES_REQUEST = 40;
+  MSG_LIST_FILES_RESPONSE = 41;
+
+  // General
+  MSG_ERROR = 50;
+  MSG_PROGRESS = 51;
+}
+
+// Progress update (sent during long transfers)
+message ProgressUpdate {
+  string relative_path = 1;
+  uint64 bytes_transferred = 2;
+  uint64 bytes_total = 3;
+  float rate_mbps = 4;           // Transfer rate in MB/s
+  uint32 elapsed_ms = 5;
+}
+
+// ─── Wire Frame Structure ───────────────────────────────────
+// NOT a protobuf message — documented here for reference.
+//
+// Wire Frame:
+//   [uint32_t payload_length (big-endian)]   — 4 bytes
+//   [uint8_t  message_type]                  — 1 byte  (MessageType enum)
+//   [uint8_t  payload[payload_length]]       — N bytes (serialized Protobuf message)
+//
+// Zero-Copy Raw Data Frame (special):
+//   [uint32_t = 0xFFFFFFFF]                  — 4 bytes (magic sentinel)
+//   [uint8_t  = MSG_RAW_DATA = 0xFE]         — 1 byte
+//   [uint64_t raw_length (big-endian)]        — 8 bytes
+//   [raw file bytes — sent via sendfile()]    — N bytes

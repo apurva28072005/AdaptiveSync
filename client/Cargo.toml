@@ -1,0 +1,38 @@
+[package]
+name = "adaptivesync-client"
+version = "1.0.0"
+edition = "2021"
+description = "AdaptiveSync Rust client core — TCP, delta-sync, hashing, file operations"
+authors = ["Prasad Hiwarkhede"]
+
+[dependencies]
+# Protocol Buffers
+prost = "0.12"
+prost-types = "0.12"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Cryptographic hashing
+sha2 = "0.10"
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Serialization helpers
+hex = "0.4"
+
+# Cross-platform file system
+walkdir = "2"
+
+[build-dependencies]
+prost-build = "0.12"
+
+[lib]
+name = "adaptivesync_client"
+path = "src/lib.rs"
